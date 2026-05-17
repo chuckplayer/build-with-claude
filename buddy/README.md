@@ -9,10 +9,13 @@ MicroPython app bundle for the M5Stack Cardputer-Adv. Installed onto `/flash/` b
 ├── main.py              launcher menu (replaces UIFlow's boot flow)
 ├── buddy_*.py           shared libs (BLE, UI, state, protocol, chars)
 ├── burst_frames.py      sprite frames
+├── wifi_event.py        event-WiFi fallback credentials
 └── apps/
-    ├── claude_buddy.py  BLE client that pairs with Claude.app's Hardware Buddy
-    ├── hello_cardputer.py
-    └── snake.py
+    ├── claude_buddy.py  BLE client that pairs with Claude Desktop's Hardware Buddy
+    ├── file_browser.py  browse /flash/, view text files, delete files
+    ├── system_info.py   firmware / memory / storage / network / battery snapshot
+    ├── timer.py         countdown timer and stopwatch
+    └── wifi_browser.py  scan networks, connect, save credentials
 ```
 
 `main.py` scans `/flash/apps/` at boot and shows every `.py` as a menu entry. Drop a new file in there, re-run `m5-onboard go` (or `install_apps.py --src buddy`), and it shows up.
@@ -27,7 +30,7 @@ Open Claude → Developer menu → **Hardware Buddy** → Connect. BLE-only. Sta
 
 ```bash
 # Push a subset of files over USB-serial
-python3 scripts/push.py --port /dev/cu.usbmodem1101 --files apps/snake.py
+python3 scripts/push.py --port /dev/cu.usbmodem1101 --files apps/timer.py
 
 # Watch device logs
 python3 scripts/tail_serial.py --port /dev/cu.usbmodem1101

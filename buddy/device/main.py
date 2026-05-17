@@ -103,6 +103,14 @@ def _raw_connect(ssid, password, timeout_ms):
     if sta.isconnected():
         info = sta.ifconfig()
         return {"ok": True, "ssid": ssid, "ip": info[0], "elapsed_ms": 0}
+    # Disconnect any in-progress attempt before starting a fresh one.
+    # Without this, a second call inherits the first's "connecting" state and
+    # sta.connect() raises OSError or fails silently.
+    try:
+        sta.disconnect()
+        time.sleep_ms(100)
+    except Exception:
+        pass
     t0 = time.ticks_ms()
     try:
         sta.connect(ssid, password)
@@ -111,6 +119,12 @@ def _raw_connect(ssid, password, timeout_ms):
     while not sta.isconnected():
         elapsed = time.ticks_diff(time.ticks_ms(), t0)
         if elapsed > timeout_ms:
+            # Stop the background retry so it doesn't interfere with I2C
+            # (keyboard) or BLE after this function returns.
+            try:
+                sta.disconnect()
+            except Exception:
+                pass
             return {"ok": False, "ssid": ssid,
                     "err": "no IP after {}s".format(timeout_ms // 1000),
                     "elapsed_ms": elapsed}
@@ -536,6 +550,19 @@ def _launch(mod_name):
 
 def main():
     _set_font()
+
+    # IMPORTANT: initialise the keyboard BEFORE any radio activity (BLE/WiFi).
+    # The matrix IC must be constructed while the radio is idle; constructing
+    # it after a failed WiFi attempt leaves the ESP32 background-retrying,
+    # which produces the same "permanently stuck returning None" symptom as
+    # constructing it too early on cold boot. The 800 ms cold-boot delay still
+    # applies; BLE + WiFi init below serve as more-than-sufficient extra time.
+    time.sleep_ms(800)
+    kb = MatrixKeyboard()
+    # 400 ms flush so any Enter bounce from the previous app's machine.reset()
+    # decays before BLE/WiFi start.
+    time.sleep_ms(400)
+
     # Bring up NimBLE BEFORE connecting to WiFi. ESP32's 2.4 GHz
     # radio is shared between WiFi and BLE through a software
     # coexistence arbiter; ESP-IDF documents that controllers
@@ -569,25 +596,11 @@ def main():
     scroll_top = 0
     _draw_chrome(apps, cursor, scroll_top)
 
-    # IMPORTANT: give the hardware time to settle before constructing
-    # the MatrixKeyboard. On a fresh cold-boot from UIFlow's boot.py
-    # (boot_option=2 runs us directly — no framework between), the
-    # keyboard matrix IC is still coming up when our code starts, and
-    # a MatrixKeyboard() constructed too early gets permanently stuck
-    # returning None from get_key() for the life of the process. The
-    # LCD still draws fine (M5.begin() initialized it earlier in boot.py)
-    # so this shows up as "animation plays but keys never register" —
-    # confusing, because the launcher looks healthy.
-    #
-    # Empirically, 800 ms of pre-kb sleep is enough to let the matrix
-    # IC come fully online on a cold power-on. A freshly-instantiated
-    # MatrixKeyboard after that delay works correctly.
-    time.sleep_ms(800)
-    kb = MatrixKeyboard()
-    # Additional 400 ms debounce of the key used to land here (Enter
-    # from the previous app's reset chain, or the initial power-on
-    # flurry).
-    time.sleep_ms(400)
+    # Drain keypresses that accumulated while the WiFi splash was showing.
+    for _ in range(15):
+        kb.tick()
+        kb.get_key()
+        time.sleep_ms(20)
 
     # Burst animation state. We tick one frame per FRAME_MS on top of
     # the 40 ms keyboard poll — so ~every other iteration advances a

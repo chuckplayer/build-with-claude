@@ -37,6 +37,18 @@ Done. Power the device on/off with the side switch.
 
 ---
 
+## Launcher apps
+
+After boot the launcher shows every `.py` in `/flash/apps/` as a menu entry. The current bundle ships five:
+
+| App | What it does |
+|-----|-------------|
+| **Claude Buddy** | BLE peripheral that pairs with Claude Desktop's Hardware Buddy feature |
+| **File Browser** | Navigate `/flash/`, view text files, delete files |
+| **System Info** | One-screen snapshot of firmware, memory, storage, network, and battery state (R to refresh) |
+| **Timer** | Countdown timer and stopwatch; T toggles mode, Enter starts/pauses/resumes, R resets |
+| **WiFi Browser** | Scan networks, type a password, connect, and save the credential for future boots |
+
 ## Using Claude Buddy (BLE)
 
 1. Power on the Cardputer
@@ -44,9 +56,18 @@ Done. Power the device on/off with the side switch.
 3. In Claude Desktop: **Help → Troubleshooting → Enable Developer Tools** (one-time, persists)
 4. Then **Developer menu → Hardware Buddy → Connect**
 
-## Event WiFi
+## WiFi
 
-The bundled launcher auto-connects to the event WiFi (`cardputer` / `cardconnect`) on every boot and displays the result on screen — `Connected · IP: 192.168.x.x` on success, `WiFi: offline` on failure (the launcher always continues either way). The credentials are intentionally checked into [`buddy/device/wifi_event.py`](buddy/device/wifi_event.py); the AP is publicly broadcast at the venue and the password is the published handout, so this is not a leaked secret. To use this bundle outside the event, edit `wifi_event.py` (replace `SSID`/`PASSWORD`) or remove the `_connect_wifi_with_splash()` call near the top of `main()` to disable the auto-connect entirely.
+On every boot the launcher tries to connect to WiFi before showing the menu. It checks two credential sources in order:
+
+1. **Saved credentials** — written by the WiFi Browser app to `/flash/wifi_saved.json`. These are tried first with a 4 s timeout.
+2. **Event credentials** — hardcoded in [`buddy/device/wifi_event.py`](buddy/device/wifi_event.py) (`cardputer` / `cardconnect`). Tried only if the saved credential differs or doesn't exist.
+
+The header strip shows signal bars + SSID on a successful connect, or `offline` on failure. The launcher always continues regardless.
+
+**Connecting to a network:** pick **WiFi Browser** from the launcher, select a network, enter the password, and connect. The credential is saved automatically and used from the next boot onward.
+
+**Using outside the event:** either use WiFi Browser to save your own network, or edit `wifi_event.py` (replace `SSID`/`PASSWORD`) to change the fallback.
 
 ## Adding your own app
 
@@ -57,7 +78,7 @@ The bundled launcher auto-connects to the event WiFi (`cardputer` / `cardconnect
    ```
 3. The launcher auto-discovers the new app on next boot
 
-Crib from `buddy/device/apps/hello_cardputer.py` — it's the smallest example of the conventions (keyboard polling, font, exit behaviour).
+Use `buddy/device/apps/timer.py` or `buddy/device/apps/system_info.py` as starting templates — both show the standard conventions (keyboard polling, font, exit via `machine.reset()`).
 
 ## Getting back to stock UIFlow
 
