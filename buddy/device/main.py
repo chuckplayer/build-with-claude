@@ -116,7 +116,11 @@ def _raw_connect(ssid, password, timeout_ms):
                     "elapsed_ms": elapsed}
         time.sleep_ms(200)
     info = sta.ifconfig()
-    return {"ok": True, "ssid": ssid, "ip": info[0],
+    try:
+        rssi = sta.status("rssi")
+    except Exception:
+        rssi = -60
+    return {"ok": True, "ssid": ssid, "ip": info[0], "rssi": rssi,
             "elapsed_ms": time.ticks_diff(time.ticks_ms(), t0)}
 
 
@@ -127,6 +131,14 @@ _DARK = 0x1F1F1F
 _GRAY_MID = 0x777777
 _GREEN = 0x00FF00
 _RED = 0xFF0000
+
+
+def _read_battery():
+    """Return (level_pct, is_charging). Falls back to (None, False) on error."""
+    try:
+        return M5.Power.getBatteryLevel(), M5.Power.isCharging()
+    except Exception:
+        return None, False
 
 # Last-known WiFi connect result, populated by _connect_wifi_with_splash
 # and read by _draw_chrome to render the header status pip. None until
@@ -323,11 +335,11 @@ def _discover_apps():
 # doesn't touch the animation's bounding box.
 _MENU_X = 10
 _MENU_RIGHT = 150         # menu highlight ends here; animation starts beyond
-_MAX_VISIBLE = 5          # rows shown at once; drives scroll viewport
+_MAX_VISIBLE = 6          # rows shown at once; drives scroll viewport
 _BURST_W = 72
 _BURST_H = 72
 _BURST_X = 160            # top-left x of burst bounding box
-_BURST_Y = 30             # top-left y (just below the header hairline at y=20)
+_BURST_Y = 24             # top-left y (just below the header hairline at y=16)
 _BURST_CX = _BURST_X + _BURST_W // 2
 _BURST_CY = _BURST_Y + _BURST_H // 2
 
@@ -365,23 +377,43 @@ def _draw_chrome(apps, cursor, scroll_top=0):
     the panel push takes a few ms."""
     _LCD.fillScreen(_BLACK)
 
-    # Header.
-    _LCD.fillRect(0, 0, _W, 20, _DARK)
-    _LCD.fillRect(0, 20, _W, 1, _ORANGE)
+    # Status bar header — 16 px tall, no title text, just WiFi + battery.
+    _LCD.fillRect(0, 0, _W, 16, _DARK)
+    _LCD.fillRect(0, 16, _W, 1, _ORANGE)
     _LCD.setTextSize(1)
-    _LCD.setTextColor(_ORANGE, _DARK)
-    _LCD.drawString("Claude Buddy Launcher", 6, 5)
 
-    # WiFi status pip on the header's right side. Reads the cached
-    # _wifi_status set by _connect_wifi_with_splash on boot.
-    pip_text, pip_color = _wifi_pip_label()
-    _LCD.setTextColor(pip_color, _DARK)
-    _LCD.drawString(pip_text, _W - _LCD.textWidth(pip_text) - 6, 5)
+    # WiFi: 4 staircase bars then SSID (or "offline" in gray).
+    if _wifi_status and _wifi_status.get("ok"):
+        rssi   = _wifi_status.get("rssi", -60)
+        ssid   = _wifi_status.get("ssid", "")
+        filled = 4 if rssi >= -55 else 3 if rssi >= -65 else 2 if rssi >= -75 else 1
+        for i, h in enumerate((3, 5, 7, 9)):
+            color = _ORANGE if i < filled else 0x444444
+            _LCD.fillRect(4 + i * 4, 16 - 3 - h, 3, h, color)
+        max_w = 130
+        ssid_d = ssid
+        while _LCD.textWidth(ssid_d) > max_w and len(ssid_d) > 1:
+            ssid_d = ssid_d[:-1]
+        if ssid_d != ssid:
+            ssid_d = ssid_d[:-2] + ".."
+        _LCD.setTextColor(_CREAM, _DARK)
+        _LCD.drawString(ssid_d, 22, 3)
+    else:
+        _LCD.setTextColor(_GRAY_MID, _DARK)
+        _LCD.drawString("offline", 4, 3)
+
+    # Battery: percentage + "+" when charging, color by level.
+    pct, charging = _read_battery()
+    if pct is not None:
+        bat_color = _GREEN if pct >= 60 else _ORANGE if pct >= 20 else _RED
+        bat_str   = "{}%{}".format(pct, "+" if charging else "")
+        _LCD.setTextColor(bat_color, _DARK)
+        _LCD.drawString(bat_str, _W - _LCD.textWidth(bat_str) - 4, 3)
 
     # Menu rows constrained to the left region so the burst animation
     # has clean space on the right. Only _MAX_VISIBLE rows are shown at
     # once; scroll_top is the index of the first visible app.
-    y = 28
+    y = 22
     row_h = 16
     hi_x = 4
     hi_w = _MENU_RIGHT - hi_x        # highlight width, ends before burst
@@ -401,10 +433,10 @@ def _draw_chrome(apps, cursor, scroll_top=0):
     ind_x = _MENU_RIGHT - 10
     if scroll_top > 0:
         _LCD.setTextColor(_ORANGE, _BLACK)
-        _LCD.drawString("^", ind_x, 28)
+        _LCD.drawString("^", ind_x, 22)
     if scroll_top + _MAX_VISIBLE < len(apps):
         _LCD.setTextColor(_ORANGE, _BLACK)
-        _LCD.drawString("v", ind_x, 28 + (len(visible) - 1) * row_h)
+        _LCD.drawString("v", ind_x, 22 + (len(visible) - 1) * row_h)
 
     # Hint strip.
     _LCD.fillRect(0, _H - 18, _W, 18, _DARK)
