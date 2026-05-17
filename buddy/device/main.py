@@ -34,6 +34,7 @@ rhythm so the launcher feels like part of the bundle.
 # so no `from __future__ import annotations`. Keep type hints as
 # strings if we need them (we don't here).
 
+import json as _json
 import os
 import sys
 import time
@@ -74,6 +75,49 @@ try:
 except ImportError as e:
     print("launcher: wifi_event not available:", e)
     _wifi = None
+
+
+def _load_saved_wifi():
+    """Return (ssid, password) from /flash/wifi_saved.json, or (None, None)."""
+    try:
+        with open("/flash/wifi_saved.json") as f:
+            d = _json.load(f)
+            ssid = d.get("ssid")
+            if ssid:
+                return ssid, d.get("password", "")
+    except Exception:
+        pass
+    return None, None
+
+
+def _raw_connect(ssid, password, timeout_ms):
+    """Connect to ssid/password and return a result dict.
+
+    Same shape as wifi_event.connect() so the splash renderer can treat
+    both sources identically.
+    """
+    import network
+    sta = network.WLAN(network.STA_IF)
+    if not sta.active():
+        sta.active(True)
+    if sta.isconnected():
+        info = sta.ifconfig()
+        return {"ok": True, "ssid": ssid, "ip": info[0], "elapsed_ms": 0}
+    t0 = time.ticks_ms()
+    try:
+        sta.connect(ssid, password)
+    except Exception as e:
+        return {"ok": False, "ssid": ssid, "err": str(e), "elapsed_ms": 0}
+    while not sta.isconnected():
+        elapsed = time.ticks_diff(time.ticks_ms(), t0)
+        if elapsed > timeout_ms:
+            return {"ok": False, "ssid": ssid,
+                    "err": "no IP after {}s".format(timeout_ms // 1000),
+                    "elapsed_ms": elapsed}
+        time.sleep_ms(200)
+    info = sta.ifconfig()
+    return {"ok": True, "ssid": ssid, "ip": info[0],
+            "elapsed_ms": time.ticks_diff(time.ticks_ms(), t0)}
 
 
 _BLACK = 0x000000
@@ -160,36 +204,54 @@ def _init_ble():
 
 
 def _connect_wifi_with_splash():
-    """Show a Connecting splash, run the event-WiFi connect, then
-    flash a Connected/Failed result for ~1.5 s before returning.
+    """Try saved WiFi credentials first, then wifi_event fallback.
 
-    Stores the result in module-level ``_wifi_status`` so the
-    launcher chrome can render the right status pip on every
-    repaint. Safe to call when ``wifi_event`` failed to import —
-    we just skip the splash entirely and the chrome shows the
-    "OFFLINE" pip.
+    Saved credentials (written by wifi_browser.py) get a 4 s fast-fail
+    timeout so a stale public-network entry doesn't hold up the boot for
+    too long when the user is back home.  The wifi_event fallback (home
+    network) gets the full 8 s budget.  If the saved and event SSIDs are
+    the same (user saved their home network via the browser), only one
+    attempt is made with the full 8 s timeout.
+
+    Stores the final result in ``_wifi_status`` for the header pip.
     """
     global _wifi_status
-    if _wifi is None:
-        return
-    _LCD.fillScreen(_BLACK)
-    _LCD.setTextSize(1)
-    _LCD.setTextColor(_ORANGE, _BLACK)
-    title = "Connecting to WiFi"
-    _LCD.drawString(title, (_W - _LCD.textWidth(title)) // 2, 40)
-    _LCD.setTextColor(_GRAY_MID, _BLACK)
-    sub = "SSID: {}".format(_wifi.SSID)
-    _LCD.drawString(sub, (_W - _LCD.textWidth(sub)) // 2, 60)
-    _LCD.drawString("(up to 8s)", (_W - _LCD.textWidth("(up to 8s)")) // 2, 78)
 
-    try:
-        result = _wifi.connect()
-    except Exception as e:
-        # Defensive — wifi_event imports network at call time, and a
-        # build without a working network module would explode here.
-        # The launcher should still come up.
-        result = {"ok": False, "ssid": getattr(_wifi, "SSID", "?"),
-                  "err": "exception: {}".format(e), "elapsed_ms": 0}
+    # Build ordered attempt list: (ssid, password, timeout_ms).
+    attempts = []
+    saved_ssid, saved_pw = _load_saved_wifi()
+    if saved_ssid:
+        attempts.append((saved_ssid, saved_pw, 4000))
+    if _wifi is not None:
+        event_ssid = getattr(_wifi, "SSID", None)
+        event_pw   = getattr(_wifi, "PASSWORD", "")
+        # Only add as a separate attempt if it differs from the saved SSID.
+        if event_ssid and event_ssid != saved_ssid:
+            attempts.append((event_ssid, event_pw, 8000))
+
+    if not attempts:
+        return
+
+    result = {"ok": False, "ssid": "", "err": "no credentials", "elapsed_ms": 0}
+    for ssid, password, timeout_ms in attempts:
+        _LCD.fillScreen(_BLACK)
+        _LCD.setTextSize(1)
+        _LCD.setTextColor(_ORANGE, _BLACK)
+        title = "Connecting to WiFi"
+        _LCD.drawString(title, (_W - _LCD.textWidth(title)) // 2, 40)
+        _LCD.setTextColor(_GRAY_MID, _BLACK)
+        sub = "SSID: {}".format(ssid)
+        _LCD.drawString(sub, (_W - _LCD.textWidth(sub)) // 2, 60)
+        tstr = "(up to {}s)".format(timeout_ms // 1000)
+        _LCD.drawString(tstr, (_W - _LCD.textWidth(tstr)) // 2, 78)
+        try:
+            result = _raw_connect(ssid, password, timeout_ms)
+        except Exception as e:
+            result = {"ok": False, "ssid": ssid,
+                      "err": "exception: {}".format(e), "elapsed_ms": 0}
+        if result.get("ok"):
+            break
+
     _wifi_status = result
 
     _LCD.fillScreen(_BLACK)

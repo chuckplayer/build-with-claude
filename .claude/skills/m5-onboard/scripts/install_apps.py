@@ -322,6 +322,13 @@ def install(
     root_basenames = {os.path.basename(d) for (_, d) in plan if d.startswith("/flash/") and "/flash/apps/" not in d}
     need_apps_dir = any(d.startswith("/flash/apps/") for (_, d) in plan)
 
+    # Wait for the port to appear on disk (native-USB ESP32-S3 re-enumerates
+    # briefly after UIFlow boots; opening too early gets ENOENT).
+    for _w in range(15):
+        if os.path.exists(port):
+            break
+        print(f"  waiting for {port} to appear... ({_w+1}/15)", flush=True)
+        time.sleep(1.0)
     s = mpy_repl.open_port(port)
     try:
         # Get to a known clean state. We used to call hard_reset() here,

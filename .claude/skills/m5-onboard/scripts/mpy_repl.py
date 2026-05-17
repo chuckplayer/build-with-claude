@@ -27,8 +27,16 @@ except ImportError:
 REPL_BAUD = 115200
 
 
-def open_port(port: str, baud: int = REPL_BAUD, timeout: float = 1.0) -> "serial.Serial":
-    return serial.Serial(port, baud, timeout=timeout)
+def open_port(port: str, baud: int = REPL_BAUD, timeout: float = 1.0,
+              retries: int = 10, retry_delay: float = 1.0) -> "serial.Serial":
+    for attempt in range(retries):
+        try:
+            return serial.Serial(port, baud, timeout=timeout)
+        except serial.SerialException:
+            if attempt == retries - 1:
+                raise
+            time.sleep(retry_delay)
+    raise serial.SerialException(f"could not open port {port} after {retries} attempts")
 
 
 def hard_reset(s: "serial.Serial") -> None:
