@@ -69,10 +69,13 @@ _MODE_ACTIVE  = 3
 _MODE_REST    = 4
 _MODE_SUMMARY = 5
 _MODE_DELETE  = 6
+_MODE_ADD_EX  = 7
 
 # ── Accelerometer rep counter constants ───────────────────────────────────────
-_RC_IDLE     = 0
-_RC_PEAK     = 1
+_RC_IDLE   = 0
+_RC_PEAK1  = 1   # first movement (e.g. push/pull)
+_RC_VALLEY = 2   # between movements (at apex/lockout)
+_RC_PEAK2  = 3   # return movement
 _RC_LOW_SQ   = 1.1
 _RC_HIGH_SQ  = 1.8
 _RC_DEBOUNCE = 600
@@ -179,10 +182,17 @@ def _rc_sample(rc, xyz, now_ms):
     x, y, z = xyz
     mag_sq = x * x + y * y + z * z
     just_inc = False
-    if rc["state"] == _RC_IDLE:
+    state = rc["state"]
+    if state == _RC_IDLE:
         if mag_sq > _RC_HIGH_SQ and (now_ms - rc["last_ms"]) >= _RC_DEBOUNCE:
-            rc["state"] = _RC_PEAK
-    elif rc["state"] == _RC_PEAK:
+            rc["state"] = _RC_PEAK1
+    elif state == _RC_PEAK1:
+        if mag_sq < _RC_LOW_SQ:
+            rc["state"] = _RC_VALLEY
+    elif state == _RC_VALLEY:
+        if mag_sq > _RC_HIGH_SQ:
+            rc["state"] = _RC_PEAK2
+    elif state == _RC_PEAK2:
         if mag_sq < _RC_LOW_SQ:
             rc["count"] += 1
             rc["last_ms"] = now_ms
@@ -374,7 +384,7 @@ def _draw_picker(Lcd, split_name, exercises, selected_set, cursor, scroll_top):
 def _draw_active(Lcd, exercise, set_num, weight, reps, pr_e1rm, rep_color=None):
     badge = "S{}".format(set_num)
     _draw_header(Lcd, exercise[:18], badge)
-    _draw_hint(Lcd, "j/k wt  u/d reps  Enter log  N next  F fin")
+    _draw_hint(Lcd, "j/k wt  u/d r  Ent log  P/N  A add  R rm  F")
     _clear_body(Lcd)
 
     # Large weight number
@@ -453,6 +463,31 @@ def _draw_rest_timer(Lcd, secs_left):
     Lcd.setTextColor(_ORANGE, _BLACK)
     Lcd.drawString(t_str, tx, 62)
     Lcd.setTextSize(1)
+
+
+# ── ADD EXERCISE screen ───────────────────────────────────────────────────────
+
+def _draw_add_ex(Lcd, exercises, cursor, scroll_top):
+    _draw_header(Lcd, "Add Exercise")
+    _draw_hint(Lcd, "; . scroll  Enter add  Q cancel")
+    _clear_body(Lcd)
+    row_h = 16
+    visible = exercises[scroll_top:scroll_top + 6]
+    for i, name in enumerate(visible):
+        idx = scroll_top + i
+        y = 20 + i * row_h
+        if idx == cursor:
+            Lcd.fillRect(4, y - 1, _W - 8, row_h, _ORANGE)
+            Lcd.setTextColor(_BLACK, _ORANGE)
+        else:
+            Lcd.fillRect(4, y - 1, _W - 8, row_h, _BLACK)
+            Lcd.setTextColor(_CREAM, _BLACK)
+        Lcd.drawString(name, 8, y)
+    Lcd.setTextColor(_ORANGE, _BLACK)
+    if scroll_top > 0:
+        Lcd.drawString("^", 228, 20)
+    if scroll_top + 6 < len(exercises):
+        Lcd.drawString("v", 228, 20 + 5 * row_h)
 
 
 # ── SUMMARY screen ────────────────────────────────────────────────────────────
@@ -540,6 +575,11 @@ def run():
     cur_reps = 5
     rc = _rc_new()
     rep_flash_until = 0
+
+    # ADD_EX state
+    add_ex_list = []    # exercises available to add (split list minus already active)
+    add_ex_cursor = 0
+    add_ex_scroll = 0
 
     # Session accumulator
     session = []
@@ -792,6 +832,54 @@ def run():
                         _do_finish_and_save(session, split_name, history)
                         _draw_summary(Lcd, session, split_name, prs)
                         mode = _MODE_SUMMARY
+                elif ch == "p":
+                    if active_idx > 0:
+                        active_idx -= 1
+                        ex_name = active_exercises[active_idx]
+                        set_num = 1
+                        cur_weight = 135
+                        for ex in reversed(session):
+                            if ex["name"] == ex_name and ex["sets"]:
+                                cur_weight = ex["sets"][-1]["weight"]
+                                break
+                        cur_reps = 5
+                        rc = _rc_new()
+                        rep_flash_until = 0
+                        pr_e1rm = prs.get(ex_name, {}).get("e1rm", 0)
+                        _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm)
+                elif ch == "r":
+                    # Remove current exercise from the queue (keep its sets in session for history)
+                    if len(active_exercises) > 1:
+                        del active_exercises[active_idx]
+                        if active_idx >= len(active_exercises):
+                            active_idx = len(active_exercises) - 1
+                        ex_name = active_exercises[active_idx]
+                        set_num = 1
+                        cur_weight = 135
+                        for ex in reversed(session):
+                            if ex["name"] == ex_name and ex["sets"]:
+                                cur_weight = ex["sets"][-1]["weight"]
+                                break
+                        cur_reps = 5
+                        rc = _rc_new()
+                        rep_flash_until = 0
+                        pr_e1rm = prs.get(ex_name, {}).get("e1rm", 0)
+                        _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm)
+                    else:
+                        # Last exercise — finish the workout
+                        _do_finish_and_save(session, split_name, history)
+                        _draw_summary(Lcd, session, split_name, prs)
+                        mode = _MODE_SUMMARY
+                elif ch == "a":
+                    # Build list of exercises in this split not already in active_exercises
+                    active_set = set(active_exercises)
+                    add_ex_list = [e for e in _SPLIT_EXERCISES.get(split_name, []) if e not in active_set]
+                    if add_ex_list:
+                        add_ex_cursor = 0
+                        add_ex_scroll = 0
+                        mode = _MODE_ADD_EX
+                        _draw_add_ex(Lcd, add_ex_list, add_ex_cursor, add_ex_scroll)
+                    # If no exercises left to add, no-op
                 elif ch == "f":
                     _do_finish_and_save(session, split_name, history)
                     _draw_summary(Lcd, session, split_name, prs)
@@ -852,6 +940,43 @@ def run():
                     _draw_home(Lcd, history, home_cursor, home_scroll)
                 elif ch in ("q", "\x1b"):
                     break
+
+            # ── ADD_EX ────────────────────────────────────────────────────────
+            elif mode == _MODE_ADD_EX:
+                if ch is None:
+                    _time.sleep_ms(40)
+                    continue
+                if ch in (";", ",", "w"):
+                    if add_ex_cursor > 0:
+                        add_ex_cursor -= 1
+                    else:
+                        add_ex_cursor = len(add_ex_list) - 1
+                    if add_ex_cursor < add_ex_scroll:
+                        add_ex_scroll = add_ex_cursor
+                    _draw_add_ex(Lcd, add_ex_list, add_ex_cursor, add_ex_scroll)
+                elif ch in (".", "/", "s"):
+                    if add_ex_cursor < len(add_ex_list) - 1:
+                        add_ex_cursor += 1
+                    else:
+                        add_ex_cursor = 0
+                        add_ex_scroll = 0
+                    if add_ex_cursor >= add_ex_scroll + 6:
+                        add_ex_scroll = add_ex_cursor - 5
+                    _draw_add_ex(Lcd, add_ex_list, add_ex_cursor, add_ex_scroll)
+                elif ch == "\n":
+                    # Insert the selected exercise immediately after the current position
+                    new_ex = add_ex_list[add_ex_cursor]
+                    insert_pos = active_idx + 1
+                    active_exercises.insert(insert_pos, new_ex)
+                    mode = _MODE_ACTIVE
+                    ex_name = active_exercises[active_idx]
+                    pr_e1rm = prs.get(ex_name, {}).get("e1rm", 0)
+                    _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm)
+                elif ch in ("q", "\x1b"):
+                    mode = _MODE_ACTIVE
+                    ex_name = active_exercises[active_idx]
+                    pr_e1rm = prs.get(ex_name, {}).get("e1rm", 0)
+                    _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm)
 
             _time.sleep_ms(40)
 
