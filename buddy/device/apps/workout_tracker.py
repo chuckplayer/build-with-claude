@@ -150,11 +150,24 @@ def _save_prs(p):
     _save_json(_PRS_FILE, p)
 
 
-def _check_and_save_pr(prs, exercise, weight, reps):
+def _pr_key(exercise, side=None):
+    """Return the PR dict key for an exercise, with optional side suffix."""
+    if side is not None:
+        return "{} {}".format(exercise, side)
+    return exercise
+
+
+def _get_pr_e1rm(prs, exercise, side=None):
+    """Return the stored e1RM for an exercise (0 if none)."""
+    return prs.get(_pr_key(exercise, side), {}).get("e1rm", 0)
+
+
+def _check_and_save_pr(prs, exercise, weight, reps, side=None):
+    key = _pr_key(exercise, side)
     e1 = _e1rm(weight, reps)
-    existing = prs.get(exercise, {})
+    existing = prs.get(key, {})
     if e1 > existing.get("e1rm", 0):
-        prs[exercise] = {"weight": weight, "reps": reps, "e1rm": e1}
+        prs[key] = {"weight": weight, "reps": reps, "e1rm": e1}
         _save_prs(prs)
         return True
     return False
@@ -381,10 +394,13 @@ def _draw_picker(Lcd, split_name, exercises, selected_set, cursor, scroll_top):
 
 # ── ACTIVE screen ─────────────────────────────────────────────────────────────
 
-def _draw_active(Lcd, exercise, set_num, weight, reps, pr_e1rm, rep_color=None):
-    badge = "S{}".format(set_num)
+def _draw_active(Lcd, exercise, set_num, weight, reps, pr_e1rm, rep_color=None, cur_side=None):
+    if cur_side is not None:
+        badge = "S{} {}".format(set_num, cur_side)
+    else:
+        badge = "S{}".format(set_num)
     _draw_header(Lcd, exercise[:18], badge)
-    _draw_hint(Lcd, "j/k wt  u/d r  Ent log  P/N  A add  R rm  F")
+    _draw_hint(Lcd, "j/k wt  u/d r  Ent log  L uni  P/N  A R  F")
     _clear_body(Lcd)
 
     # Large weight number
@@ -418,6 +434,18 @@ def _draw_active(Lcd, exercise, set_num, weight, reps, pr_e1rm, rep_color=None):
     if pr_e1rm > 0:
         Lcd.setTextColor(_TEAL, _BLACK)
         Lcd.drawString("1RM: {}".format(pr_e1rm), 4, 100)
+
+    # Side indicator box (unilateral mode)
+    if cur_side is not None:
+        if cur_side == "R":
+            side_bg = _TEAL
+        else:
+            side_bg = _ORANGE
+        Lcd.fillRect(_W - 26, 94, 24, 20, side_bg)
+        Lcd.setTextColor(_BLACK, side_bg)
+        Lcd.setTextSize(2)
+        Lcd.drawString(cur_side, _W - 20, 97)
+        Lcd.setTextSize(1)
 
 
 def _draw_rep_number(Lcd, reps, color):
@@ -575,6 +603,12 @@ def run():
     cur_reps = 5
     rc = _rc_new()
     rep_flash_until = 0
+
+    # Unilateral state
+    unilateral_exercises = set()   # exercises toggled to unilateral this session
+    cur_side = None                # None = bilateral; "R" or "L" when unilateral
+    pending_r_weight = 0           # R-arm weight held while doing L arm
+    pending_r_reps = 0             # R-arm reps held while doing L arm
 
     # ADD_EX state
     add_ex_list = []    # exercises available to add (split list minus already active)
@@ -739,10 +773,17 @@ def run():
                         rc = _rc_new()
                         rep_flash_until = 0
                         session = []
-                        pr_e1rm = prs.get(active_exercises[0], {}).get("e1rm", 0)
+                        pending_r_weight = 0
+                        pending_r_reps = 0
+                        first_ex = active_exercises[0]
+                        if first_ex in unilateral_exercises:
+                            cur_side = "R"
+                        else:
+                            cur_side = None
+                        pr_e1rm = _get_pr_e1rm(prs, first_ex, cur_side)
                         mode = _MODE_ACTIVE
-                        _draw_active(Lcd, active_exercises[0], set_num, cur_weight,
-                                     cur_reps, pr_e1rm)
+                        _draw_active(Lcd, first_ex, set_num, cur_weight,
+                                     cur_reps, pr_e1rm, cur_side=cur_side)
                 elif ch in ("q", "\x1b"):
                     mode = _MODE_SPLIT
                     _draw_split(Lcd, split_cursor)
@@ -769,7 +810,7 @@ def run():
                     continue
 
                 ex_name = active_exercises[active_idx]
-                pr_e1rm = prs.get(ex_name, {}).get("e1rm", 0)
+                pr_e1rm = _get_pr_e1rm(prs, ex_name, cur_side)
                 redraw = False
 
                 if ch == "k":
@@ -787,32 +828,61 @@ def run():
                     rc["count"] = cur_reps
                     redraw = True
                 elif ch == "\n":
-                    # Log the set
-                    found = None
-                    for ex in session:
-                        if ex["name"] == ex_name:
-                            found = ex
-                            break
-                    if found is None:
-                        found = {"name": ex_name, "sets": []}
-                        session.append(found)
-                    found["sets"].append({"weight": cur_weight, "reps": cur_reps})
-                    new_pr = _check_and_save_pr(prs, ex_name, cur_weight, cur_reps)
-                    if new_pr:
-                        _beep_pr()
-                    last_weight = cur_weight
-                    last_reps = cur_reps
-                    set_num += 1
-                    rc = _rc_new()
-                    rep_flash_until = 0
-                    rest_end_ms = _time.ticks_add(_time.ticks_ms(), _REST_SECS * 1000)
-                    if active_idx + 1 < len(active_exercises):
-                        next_ex = active_exercises[active_idx + 1]
+                    if cur_side == "R":
+                        # Right arm done — store pending, switch to left arm
+                        pending_r_weight = cur_weight
+                        pending_r_reps = cur_reps
+                        cur_side = "L"
+                        cur_reps = 5
+                        rc = _rc_new()
+                        rep_flash_until = 0
+                        pr_e1rm = _get_pr_e1rm(prs, ex_name, cur_side)
+                        _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm, cur_side=cur_side)
                     else:
-                        next_ex = None
-                    mode = _MODE_REST
-                    _draw_rest_static(Lcd, last_weight, last_reps, new_pr, next_ex)
-                    _draw_rest_timer(Lcd, _REST_SECS)
+                        # Bilateral OR left arm done — log set(s) and go to rest
+                        found = None
+                        for ex in session:
+                            if ex["name"] == ex_name:
+                                found = ex
+                                break
+                        if found is None:
+                            found = {"name": ex_name, "sets": []}
+                            session.append(found)
+
+                        if cur_side == "L":
+                            # Log R arm then L arm as separate entries
+                            found["sets"].append({"weight": pending_r_weight, "reps": pending_r_reps, "side": "R"})
+                            found["sets"].append({"weight": cur_weight, "reps": cur_reps, "side": "L"})
+                            # PR per arm
+                            pr_r = _check_and_save_pr(prs, ex_name, pending_r_weight, pending_r_reps, side="R")
+                            pr_l = _check_and_save_pr(prs, ex_name, cur_weight, cur_reps, side="L")
+                            new_pr = pr_r or pr_l
+                            last_weight = cur_weight
+                            last_reps = cur_reps
+                            # Reset to right arm for next set
+                            cur_side = "R"
+                            pending_r_weight = 0
+                            pending_r_reps = 0
+                        else:
+                            # Normal bilateral
+                            found["sets"].append({"weight": cur_weight, "reps": cur_reps})
+                            new_pr = _check_and_save_pr(prs, ex_name, cur_weight, cur_reps)
+                            last_weight = cur_weight
+                            last_reps = cur_reps
+
+                        if new_pr:
+                            _beep_pr()
+                        set_num += 1
+                        rc = _rc_new()
+                        rep_flash_until = 0
+                        rest_end_ms = _time.ticks_add(_time.ticks_ms(), _REST_SECS * 1000)
+                        if active_idx + 1 < len(active_exercises):
+                            next_ex = active_exercises[active_idx + 1]
+                        else:
+                            next_ex = None
+                        mode = _MODE_REST
+                        _draw_rest_static(Lcd, last_weight, last_reps, new_pr, next_ex)
+                        _draw_rest_timer(Lcd, _REST_SECS)
                 elif ch == "n":
                     if active_idx + 1 < len(active_exercises):
                         active_idx += 1
@@ -826,8 +896,14 @@ def run():
                         cur_reps = 5
                         rc = _rc_new()
                         rep_flash_until = 0
-                        pr_e1rm = prs.get(next_name, {}).get("e1rm", 0)
-                        _draw_active(Lcd, next_name, set_num, cur_weight, cur_reps, pr_e1rm)
+                        pending_r_weight = 0
+                        pending_r_reps = 0
+                        if next_name in unilateral_exercises:
+                            cur_side = "R"
+                        else:
+                            cur_side = None
+                        pr_e1rm = _get_pr_e1rm(prs, next_name, cur_side)
+                        _draw_active(Lcd, next_name, set_num, cur_weight, cur_reps, pr_e1rm, cur_side=cur_side)
                     else:
                         _do_finish_and_save(session, split_name, history)
                         _draw_summary(Lcd, session, split_name, prs)
@@ -845,8 +921,14 @@ def run():
                         cur_reps = 5
                         rc = _rc_new()
                         rep_flash_until = 0
-                        pr_e1rm = prs.get(ex_name, {}).get("e1rm", 0)
-                        _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm)
+                        pending_r_weight = 0
+                        pending_r_reps = 0
+                        if ex_name in unilateral_exercises:
+                            cur_side = "R"
+                        else:
+                            cur_side = None
+                        pr_e1rm = _get_pr_e1rm(prs, ex_name, cur_side)
+                        _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm, cur_side=cur_side)
                 elif ch == "r":
                     # Remove current exercise from the queue (keep its sets in session for history)
                     if len(active_exercises) > 1:
@@ -863,8 +945,14 @@ def run():
                         cur_reps = 5
                         rc = _rc_new()
                         rep_flash_until = 0
-                        pr_e1rm = prs.get(ex_name, {}).get("e1rm", 0)
-                        _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm)
+                        pending_r_weight = 0
+                        pending_r_reps = 0
+                        if ex_name in unilateral_exercises:
+                            cur_side = "R"
+                        else:
+                            cur_side = None
+                        pr_e1rm = _get_pr_e1rm(prs, ex_name, cur_side)
+                        _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm, cur_side=cur_side)
                     else:
                         # Last exercise — finish the workout
                         _do_finish_and_save(session, split_name, history)
@@ -880,6 +968,21 @@ def run():
                         mode = _MODE_ADD_EX
                         _draw_add_ex(Lcd, add_ex_list, add_ex_cursor, add_ex_scroll)
                     # If no exercises left to add, no-op
+                elif ch == "l":
+                    ex_name = active_exercises[active_idx]
+                    if ex_name in unilateral_exercises:
+                        # Toggle OFF — return to bilateral
+                        unilateral_exercises.discard(ex_name)
+                        cur_side = None
+                        # Discard any pending R arm data
+                        pending_r_weight = 0
+                        pending_r_reps = 0
+                    else:
+                        # Toggle ON — start with right arm
+                        unilateral_exercises.add(ex_name)
+                        cur_side = "R"
+                    pr_e1rm = _get_pr_e1rm(prs, ex_name, cur_side)
+                    _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm, cur_side=cur_side)
                 elif ch == "f":
                     _do_finish_and_save(session, split_name, history)
                     _draw_summary(Lcd, session, split_name, prs)
@@ -891,7 +994,7 @@ def run():
 
                 if redraw:
                     _draw_active(Lcd, active_exercises[active_idx], set_num,
-                                 cur_weight, cur_reps, pr_e1rm)
+                                 cur_weight, cur_reps, pr_e1rm, cur_side=cur_side)
 
             # ── REST ──────────────────────────────────────────────────────────
             elif mode == _MODE_REST:
@@ -910,19 +1013,19 @@ def run():
                     else:
                         # Any other key skips rest — return to active screen
                         ex_name = active_exercises[active_idx]
-                        pr_e1rm = prs.get(ex_name, {}).get("e1rm", 0)
+                        pr_e1rm = _get_pr_e1rm(prs, ex_name, cur_side)
                         rc = _rc_new()
                         rep_flash_until = 0
                         mode = _MODE_ACTIVE
-                        _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm)
+                        _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm, cur_side=cur_side)
                 elif remaining_ms <= 0:
                     _beep_rest_done()
                     ex_name = active_exercises[active_idx]
-                    pr_e1rm = prs.get(ex_name, {}).get("e1rm", 0)
+                    pr_e1rm = _get_pr_e1rm(prs, ex_name, cur_side)
                     rc = _rc_new()
                     rep_flash_until = 0
                     mode = _MODE_ACTIVE
-                    _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm)
+                    _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm, cur_side=cur_side)
                 else:
                     _draw_rest_timer(Lcd, secs_left)
                     _time.sleep_ms(500)
@@ -970,13 +1073,13 @@ def run():
                     active_exercises.insert(insert_pos, new_ex)
                     mode = _MODE_ACTIVE
                     ex_name = active_exercises[active_idx]
-                    pr_e1rm = prs.get(ex_name, {}).get("e1rm", 0)
-                    _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm)
+                    pr_e1rm = _get_pr_e1rm(prs, ex_name, cur_side)
+                    _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm, cur_side=cur_side)
                 elif ch in ("q", "\x1b"):
                     mode = _MODE_ACTIVE
                     ex_name = active_exercises[active_idx]
-                    pr_e1rm = prs.get(ex_name, {}).get("e1rm", 0)
-                    _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm)
+                    pr_e1rm = _get_pr_e1rm(prs, ex_name, cur_side)
+                    _draw_active(Lcd, ex_name, set_num, cur_weight, cur_reps, pr_e1rm, cur_side=cur_side)
 
             _time.sleep_ms(40)
 
