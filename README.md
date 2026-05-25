@@ -45,7 +45,7 @@ After boot the launcher shows a menu with pinned apps at the top and a **Utiliti
 
 | App | What it does |
 |-----|-------------|
-| **Workout Tracker** | Log sets by split (Push/Pull/Legs/Full Body); live accelerometer rep counting; PR tracking with Epley e1RM; 90 s rest timer with beep |
+| **Workout Tracker** | Log sets by split (Push/Pull/Legs/Full Body); live accelerometer rep counting; PR tracking with Epley e1RM; 90 s rest timer with beep; unilateral (alternating-arm) mode for cable exercises |
 
 ### Utilities submenu
 
@@ -76,11 +76,14 @@ After boot the launcher shows a menu with pinned apps at the top and a **Utiliti
 | Active | P / N | Previous / next exercise |
 | Active | A | Add an exercise from the split list |
 | Active | R | Remove current exercise from queue |
+| Active | L | Toggle unilateral (alternating-arm) mode |
 | Active | F | Finish and save workout |
 | Rest | any key | Skip rest, return to set screen |
 | Rest | F | Finish workout |
 
 The accelerometer rep counter activates automatically during a set — place the device flat on the weight stack. One "out and back" movement = 1 rep. Manual u/d keys override the count at any time.
+
+**Unilateral mode (L key):** for cable exercises done one arm at a time. Press **L** on any exercise to toggle it on — the badge changes from `S1` to `S1 R` and a teal **R** box appears. After the right arm set, Enter immediately shows the **L** screen (orange box, same weight). Second Enter logs both arms and starts the rest timer. PRs are tracked per arm (`"Cable Curl R"` / `"Cable Curl L"`). Press L again to return to normal bilateral logging.
 
 ## WiFi
 
