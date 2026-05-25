@@ -7,22 +7,19 @@ MicroPython app bundle for the M5Stack Cardputer-Adv. Installed onto `/flash/` b
 ```
 /flash/
 ├── main.py              launcher menu (replaces UIFlow's boot flow)
-├── buddy_*.py           shared libs (BLE, UI, state, protocol, chars)
-├── burst_frames.py      sprite frames
 ├── wifi_event.py        event-WiFi fallback credentials
 └── apps/
-    ├── claude_buddy.py  BLE client that pairs with Claude Desktop's Hardware Buddy
     ├── file_browser.py  browse /flash/, view text files, delete files
     ├── system_info.py   firmware / memory / storage / network / battery snapshot
     ├── timer.py         countdown timer and stopwatch
     └── wifi_browser.py  scan networks, connect, save credentials
 ```
 
-`main.py` scans `/flash/apps/` at boot and shows every `.py` as a menu entry. Drop a new file in there, re-run `m5-onboard go` (or `install_apps.py --src buddy`), and it shows up.
+`main.py` scans `/flash/apps/` at boot and builds the menu automatically.  Drop a new `.py` in there, re-run `m5-onboard go` (or `install_apps.py --src buddy`), and it shows up.
 
-## Claude Buddy (BLE)
+### Utilities submenu
 
-Open Claude → Developer menu → **Hardware Buddy** → Connect. BLE-only. Stats (approvals / denials / level) persist across reboots via NVS under the `buddy` namespace.
+`system_info`, `file_browser`, and `wifi_browser` are grouped under a **Utilities** entry at the bottom of the main menu.  Select **Utilities** to open the submenu; press **ESC** (or **Q**) to return to the top level.
 
 ## Iterating on device code
 
@@ -38,12 +35,6 @@ python3 scripts/tail_serial.py --port /dev/cu.usbmodem1101
 # One-shot REPL exec
 python3 scripts/repl_run.py --port /dev/cu.usbmodem1101 --script "import os; print(os.listdir('/flash'))"
 ```
-
-`gen_burst_frames.py` regenerates `burst_frames.py` from source sprites.
-
-## References
-
-- `references/` — BLE protocol notes for the Claude Buddy app
 
 ## License
 

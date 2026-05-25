@@ -1,33 +1,24 @@
 """Custom launcher for the Cardputer-Adv buddy bundle.
 
-Why this exists: UIFlow 2.0's stock launcher (startup/cardputeradv/apps/
-app_list.py) runs a background BLE advertise for flow.m5stack.com
-pairing before handing control to a user app. On this ESP32-S3 build,
-once that advertise has run the NimBLE controller rejects any
-subsequent ``gap_advertise(adv_data=...)`` call with OSError -519
-("Memory Capacity Exceeded"), regardless of payload shape, until
-reboot. The result is that our BLE peripherals (Claude Buddy) fall
-back to empty advertising — discoverable only to permissive scanners
-like LightBlue and invisible to iOS / the desktop Claude Buddy app.
+Why this exists: UIFlow 2.0's stock launcher runs its own framework
+before handing control to a user app.  We skip it entirely by setting
+the NVS ``boot_option`` to 2 ("user app mode") so UIFlow's boot.py
+calls ``/flash/main.py`` directly.  This gives us full control over
+which apps appear in the menu — useful for curating the experience and
+keeping helper modules (system_info, file_browser, wifi_browser) out
+of the top-level list without hiding them completely.
 
-The fix is to skip UIFlow's launcher entirely: set the NVS
-``boot_option`` to 2 ("user app mode") so UIFlow's boot.py calls
-``/flash/main.py`` instead of starting its framework, and have
-``main.py`` show our own menu that hands off to the selected app
-without touching BLE. UIFlow's BLE code never runs, the stack stays
-pristine, and our adv_data payload works on first try.
+Menu items are the ``.py`` files in ``/flash/apps/``.  Selection is
+driven by the matrix keyboard — ``;`` / ``.`` scroll up/down,
+Enter launches.  The launched app exits via ``machine.reset()``, which
+reboots the device and returns to this launcher.
 
-Menu items are the three ``.py`` files in ``/flash/apps/``. Selection
-is driven by the matrix keyboard — arrow keys (``;`` up / ``.`` down,
-matching the Cardputer-Adv's labeled arrow cluster) scroll the
-highlight, Enter launches. The launched app exits via
-``machine.reset()`` (same pattern every Buddy-bundle app uses), which
-reboots the device and brings us back to this launcher cleanly — no
-"return from app" protocol to maintain.
+The top-level menu shows user-facing apps plus a **Utilities** submenu
+entry.  Selecting Utilities reveals system_info, file_browser, and
+wifi_browser; ESC (or Q) returns to the top level.
 
-Layout mirrors the app suite: 20 px DARK header, ORANGE hairline,
-cream-on-black menu rows, hint strip at the bottom. Consistent visual
-rhythm so the launcher feels like part of the bundle.
+Layout: 20 px DARK header with WiFi + battery status, ORANGE hairline,
+cream-on-black menu rows, hint strip at the bottom.
 """
 
 # Note: MicroPython on this UIFlow 2.0 build doesn't ship __future__,
@@ -54,17 +45,6 @@ try:
     M5.begin()
 except Exception as e:
     print("launcher: M5.begin() warning:", e)
-
-
-# Burst animation (Claude-orange starburst, 16 frames at 72x72). Lives
-# as a peer module at /flash/burst_frames.py. Import is wrapped so the
-# launcher still works on a board where someone forgot to push the
-# frames file — it just won't animate.
-try:
-    import burst_frames as _burst
-except ImportError as e:
-    print("launcher: burst_frames not available:", e)
-    _burst = None
 
 
 # Event-WiFi auto-connect lives in a peer module so the credentials
@@ -120,7 +100,7 @@ def _raw_connect(ssid, password, timeout_ms):
         elapsed = time.ticks_diff(time.ticks_ms(), t0)
         if elapsed > timeout_ms:
             # Stop the background retry so it doesn't interfere with I2C
-            # (keyboard) or BLE after this function returns.
+            # (keyboard) after this function returns.
             try:
                 sta.disconnect()
             except Exception:
@@ -165,12 +145,14 @@ _H = 135
 
 _APPS_DIR = "/flash/apps"
 
+# Modules that belong in the Utilities submenu rather than the top level.
+_UTILITIES_MODULES = ("system_info", "file_browser", "wifi_browser")
 
-# Make peer modules (buddy_ble, buddy_ui_cp, etc.) at /flash/ importable
-# so the launched apps can `import buddy_ble` without each one repeating
-# the sys.path dance. This matches what claude_buddy.py already does
-# defensively; doing it centrally here is cleaner than spreading the
-# fix across every entrypoint.
+# Modules that should appear first (pinned to top) in the top-level menu.
+_PINNED_MODULES = ("workout_tracker",)
+
+# Make peer modules at /flash/ importable so the launched apps can
+# import them without each one repeating the sys.path dance.
 for _p in ("/flash", "/flash/apps"):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -182,51 +164,6 @@ def _set_font():
     except Exception as e:
         # Build without FONTS; fall back to default. Not fatal.
         print("launcher: setFont fallback:", e)
-
-
-# Module-level reference so the BLE singleton survives past
-# _init_ble's frame. bluetooth.BLE() returns the same global
-# instance on every call so technically dropping the reference is
-# fine, but keeping it visible makes the lifetime obvious.
-_ble = None
-
-
-def _init_ble():
-    """Bring up NimBLE up early, before WiFi, for clean coexistence.
-
-    No advertising or service registration here — that's the
-    application layer's job (buddy_ble._ensure_stack). All we want
-    is to flip the controller into the active state while the radio
-    is still idle, so the coexistence arbiter sees BLE as a
-    registered subsystem before WiFi starts asking for slots.
-
-    The C-fault we used to hit at `active(True)` only happened when
-    the radio was already busy with WiFi traffic. Calling it here,
-    on a freshly-booted chip, is reliable in the testing we did.
-    If that ever stops being true the failure mode is a launcher
-    crash on boot — bad, but at least visible (the chip will boot-
-    loop and the serial log will show this print sequence).
-    """
-    global _ble
-    try:
-        import bluetooth
-        print("launcher: bringing up NimBLE")
-        _ble = bluetooth.BLE()
-        if not _ble.active():
-            _ble.active(True)
-        # Short settle so the controller is fully up before any
-        # later code (WiFi, app launch) starts contending for the
-        # radio. Same 250 ms we use in buddy_ble._ensure_stack.
-        time.sleep_ms(250)
-        print("launcher: NimBLE active")
-    except Exception as e:
-        # Defensive — if the import or active call somehow raises a
-        # Python-level error (rather than C-faulting the chip), the
-        # launcher should still come up. The downstream effect is
-        # that claude_buddy will then try the active(True) call
-        # itself and fall back to the old fragile path; other apps
-        # don't care.
-        print("launcher: NimBLE init warning:", e)
 
 
 def _connect_wifi_with_splash():
@@ -305,23 +242,19 @@ def _connect_wifi_with_splash():
     time.sleep_ms(1500)
 
 
-def _wifi_pip_label():
-    """Header-strip text + color for the current WiFi state. Returns
-    ``(text, color)``. Colors are picked to read cleanly against the
-    DARK header background.
-    """
-    if _wifi_status is None or not _wifi_status.get("ok"):
-        return ("OFFLINE", _GRAY_MID)
-    return ("ONLINE", _GREEN)
-
-
 def _discover_apps():
-    """Return a sorted list of ``(display_name, module_basename)``.
+    """Return ``(top_level, utilities)`` — two sorted lists of
+    ``(display_name, module_basename)``.
+
+    ``utilities`` contains entries whose module basename is in
+    ``_UTILITIES_MODULES``.  ``top_level`` contains the remaining
+    entries sorted alphabetically, with a synthetic
+    ``("Utilities", "__utilities__")`` entry appended at the end
+    (only when ``utilities`` is non-empty).
 
     Module basename is the filename without extension (for import).
-    Display name is the same but with underscores turned into spaces
-    and title-cased — gives a slightly friendlier menu than raw
-    filenames without forcing us to ship a separate metadata file.
+    Display name is the basename with underscores replaced by spaces
+    and title-cased.
     """
     try:
         files = sorted(
@@ -329,69 +262,41 @@ def _discover_apps():
         )
     except OSError as e:
         print("launcher: cannot list", _APPS_DIR, e)
-        return []
-    out = []
+        return [], []
+    top_level = []
+    utilities = []
     for fname in files:
         mod = fname[:-3]
-        # Skip dunder / private files defensively — nothing in the
-        # bundle today uses them, but a future .py dropped in for a
-        # helper shouldn't land in the visible menu.
+        # Skip dunder / private files — a helper dropped in shouldn't
+        # show up in any visible menu.
         if mod.startswith("_"):
             continue
-        display = mod.replace("_", " ")
-        out.append((display, mod))
-    return out
+        display = " ".join(w[0].upper() + w[1:] for w in mod.split("_"))
+        entry = (display, mod)
+        if mod in _UTILITIES_MODULES:
+            utilities.append(entry)
+        else:
+            top_level.append(entry)
+    if utilities:
+        top_level.append(("Utilities", "__utilities__"))
+    pinned = [e for e in top_level if e[1] in _PINNED_MODULES]
+    rest   = [e for e in top_level if e[1] not in _PINNED_MODULES]
+    top_level = pinned + rest
+    return top_level, utilities
 
 
-# Layout: the burst animation (72x72) lives in the right portion of
-# the content area; the menu occupies the left. Leave a small gap
-# between them so the orange highlight on the selected menu row
-# doesn't touch the animation's bounding box.
+# Menu spans the full usable width of the screen.
 _MENU_X = 10
-_MENU_RIGHT = 150         # menu highlight ends here; animation starts beyond
-_MAX_VISIBLE = 6          # rows shown at once; drives scroll viewport
-_BURST_W = 72
-_BURST_H = 72
-_BURST_X = 160            # top-left x of burst bounding box
-_BURST_Y = 24             # top-left y (just below the header hairline at y=16)
-_BURST_CX = _BURST_X + _BURST_W // 2
-_BURST_CY = _BURST_Y + _BURST_H // 2
+_MENU_RIGHT = 236             # screen width 240 - 4 px margin
+_MAX_VISIBLE = 6              # rows shown at once; drives scroll viewport
 
 
-def _draw_burst_frame(frame_idx):
-    """Draw one frame of the orange starburst into the right region.
-
-    Each frame is a flat bytes object of (y, x, length) triples
-    describing horizontal runs of opaque orange pixels on a black
-    background. We clear the bounding box once (so last frame's
-    spokes don't ghost) then issue one fillRect per run.
-
-    Silently no-ops if ``burst_frames`` wasn't importable — the
-    launcher still renders the menu + hints without the animation.
-    """
-    if _burst is None:
-        return
-    data = _burst.FRAMES[frame_idx % len(_burst.FRAMES)]
-    color = _burst.COLOR
-    _LCD.fillRect(_BURST_X, _BURST_Y, _BURST_W, _BURST_H, _BLACK)
-    i = 0
-    n = len(data)
-    while i < n:
-        ry = data[i]
-        rx = data[i + 1]
-        rl = data[i + 2]
-        _LCD.fillRect(_BURST_X + rx, _BURST_Y + ry, rl, 1, color)
-        i += 3
-
-
-def _draw_chrome(apps, cursor, scroll_top=0):
-    """Full repaint of chrome + menu (NOT the burst animation — that
-    ticks on its own cadence in the main loop). Fast enough to just
-    redraw on cursor move; at 240x135 the whole buffer is small and
-    the panel push takes a few ms."""
+def _draw_chrome(apps, cursor, scroll_top=0, show_back=False):
+    """Full repaint of chrome + menu. Fast enough to just redraw on
+    every cursor move; at 240x135 the whole buffer is small."""
     _LCD.fillScreen(_BLACK)
 
-    # Status bar header — 16 px tall, no title text, just WiFi + battery.
+    # Status bar header — 16 px tall, WiFi + battery.
     _LCD.fillRect(0, 0, _W, 16, _DARK)
     _LCD.fillRect(0, 16, _W, 1, _ORANGE)
     _LCD.setTextSize(1)
@@ -424,13 +329,12 @@ def _draw_chrome(apps, cursor, scroll_top=0):
         _LCD.setTextColor(bat_color, _DARK)
         _LCD.drawString(bat_str, _W - _LCD.textWidth(bat_str) - 4, 3)
 
-    # Menu rows constrained to the left region so the burst animation
-    # has clean space on the right. Only _MAX_VISIBLE rows are shown at
-    # once; scroll_top is the index of the first visible app.
+    # Menu rows. Only _MAX_VISIBLE rows are shown at once; scroll_top
+    # is the index of the first visible app.
     y = 22
     row_h = 16
     hi_x = 4
-    hi_w = _MENU_RIGHT - hi_x        # highlight width, ends before burst
+    hi_w = _MENU_RIGHT - hi_x        # highlight width
     visible = apps[scroll_top:scroll_top + _MAX_VISIBLE]
     for i, (display, _mod) in enumerate(visible):
         abs_i = scroll_top + i
@@ -455,37 +359,29 @@ def _draw_chrome(apps, cursor, scroll_top=0):
     # Hint strip.
     _LCD.fillRect(0, _H - 18, _W, 18, _DARK)
     _LCD.setTextColor(_GRAY_MID, _DARK)
-    hint = "; . up/down   Enter launch"
+    if show_back:
+        hint = "; . up/down  Enter launch  ESC back"
+    else:
+        hint = "; . up/down   Enter launch"
     _LCD.drawString(hint, (_W - _LCD.textWidth(hint)) // 2, _H - 14)
-
-    # Paint the initial burst frame so the animation region isn't
-    # just a black square until the first tick fires.
-    _draw_burst_frame(0)
 
 
 def _intent(k):
-    """Normalize a MatrixKeyboard return to up / down / launch / None.
+    """Normalize a MatrixKeyboard return to up / down / launch / back / None.
 
-    The Cardputer-Adv's arrow cluster is four keys with arrow glyphs
-    silk-screened on them, but they report as their unshifted ASCII:
+    The Cardputer-Adv's arrow cluster reports as ASCII:
     ``;`` (labeled up), ``,`` (labeled left), ``.`` (labeled down),
-    and ``/`` (labeled right). In a vertical menu, left/right don't
-    really have a meaning — users intuitively reach for the
-    physically-arrow-labeled keys regardless of direction and expect
-    the menu to scroll. So we accept all four as up/down: the two
-    "upper-ish" keys (``;`` and ``,``) scroll up, the two "lower-ish"
-    keys (``.`` and ``/``) scroll down. WASD is also accepted for
-    gamepad-muscle-memory users.
-
-    Enter reports as ``0x0A`` (LF) on this firmware build, not
-    ``0x0D`` (CR). We accept both so a future build that flips back
-    to CR doesn't silently break the launcher.
+    ``/`` (labeled right). We accept all four as up/down.  WASD also
+    accepted.  Enter reports as ``0x0A`` (LF); we accept both LF and
+    CR.  ESC (0x1B) and Q/q return "back" for the Utilities submenu.
     """
     if k is None:
         return None
     if isinstance(k, int):
         if k in (0x0A, 0x0D):
             return "launch"
+        if k == 0x1B:
+            return "back"
         if 0x20 <= k <= 0x7E:
             k = chr(k)
         else:
@@ -501,21 +397,21 @@ def _intent(k):
         return "down"
     if ch in ("\r", "\n"):
         return "launch"
+    if ch in ("q", "\x1b"):  # Q or ESC (keyboard may return ESC as string)
+        return "back"
     return None
 
 
 def _launch(mod_name):
-    """Import the module, which runs its entrypoint at import time
-    (every app in the bundle has a ``run()`` at module bottom — see
-    claude_buddy.py / snake.py / hello_cardputer.py). On clean exit
-    the app calls ``machine.reset()`` which brings us back here."""
+    """Import the module, which runs its entrypoint at import time.
+    On clean exit the app calls ``machine.reset()`` which brings us
+    back to main.py."""
     _LCD.fillScreen(_BLACK)
     try:
         __import__(mod_name)
     except Exception as e:
-        # App crashed during import/run. Show a minimal error screen
-        # so we're not just blank, wait for the user to press any
-        # key, then come back to the menu.
+        # App crashed during import/run. Show a minimal error screen,
+        # wait for any keypress, then return to the menu.
         _LCD.fillScreen(_BLACK)
         _LCD.setTextSize(1)
         _LCD.setTextColor(0xFF0000, _BLACK)
@@ -526,13 +422,8 @@ def _launch(mod_name):
         _LCD.setTextColor(_GRAY_MID, _BLACK)
         _LCD.drawString("any key to return", 6, _H - 14)
         print("launcher: {} failed: {}".format(mod_name, e))
-        # Drop the half-imported module from sys.modules. Without
-        # this, a second selection of the same app does nothing:
-        # __import__ sees the cached entry and returns immediately
-        # without re-running the module body, so the app's run()
-        # never fires and the user is left staring at a black
-        # screen. Idempotent — KeyError just means the failure
-        # happened before the partial entry was installed.
+        # Drop the half-imported module from sys.modules so a second
+        # selection re-runs the module body correctly.
         try:
             del sys.modules[mod_name]
         except KeyError:
@@ -551,50 +442,37 @@ def _launch(mod_name):
 def main():
     _set_font()
 
-    # IMPORTANT: initialise the keyboard BEFORE any radio activity (BLE/WiFi).
-    # The matrix IC must be constructed while the radio is idle; constructing
-    # it after a failed WiFi attempt leaves the ESP32 background-retrying,
-    # which produces the same "permanently stuck returning None" symptom as
-    # constructing it too early on cold boot. The 800 ms cold-boot delay still
-    # applies; BLE + WiFi init below serve as more-than-sufficient extra time.
+    # IMPORTANT: initialise the keyboard BEFORE any radio activity (WiFi).
+    # The matrix IC must be constructed while the radio is idle.
     time.sleep_ms(800)
     kb = MatrixKeyboard()
     # 400 ms flush so any Enter bounce from the previous app's machine.reset()
-    # decays before BLE/WiFi start.
+    # decays before WiFi starts.
     time.sleep_ms(400)
 
-    # Bring up NimBLE BEFORE connecting to WiFi. ESP32's 2.4 GHz
-    # radio is shared between WiFi and BLE through a software
-    # coexistence arbiter; ESP-IDF documents that controllers
-    # initialized in BT-first order coexist far more reliably than
-    # the reverse. We learned this the hard way — claude_buddy was
-    # C-faulting at `bluetooth.BLE().active(True)` whenever it
-    # tried to bring BLE up after WiFi was already running, and no
-    # amount of "tear WiFi down first" worked because ESP32's WiFi
-    # shutdown doesn't fully release the radio back to BLE in this
-    # firmware. Doing it once here, while the radio is idle, gets
-    # NimBLE registered with the coexistence arbiter; subsequent
-    # `_ensure_stack` calls in claude_buddy see pre_active=True
-    # and skip the fault-prone transition.
-    _init_ble()
-    # Connect to the event WiFi BEFORE the launcher menu so the user
-    # sees the connect status as part of boot rather than a sudden
-    # screen swap mid-menu. Splash takes ~3-9 s in the success case
-    # (connect + 1.5 s status flash) and at most ~9.5 s on failure
-    # (8 s timeout + 1.5 s flash). Long but explicit.
+    # Connect to WiFi BEFORE the launcher menu so the user sees the
+    # connect status as part of boot rather than a sudden screen swap
+    # mid-menu.
     _connect_wifi_with_splash()
 
-    apps = _discover_apps()
-    if not apps:
+    top_apps, util_apps = _discover_apps()
+    if not top_apps and not util_apps:
         _LCD.fillScreen(_BLACK)
         _LCD.setTextColor(_CREAM, _BLACK)
         _LCD.drawString("No apps in " + _APPS_DIR, 6, 40)
         while True:
             time.sleep_ms(500)
 
-    cursor = 0
-    scroll_top = 0
-    _draw_chrome(apps, cursor, scroll_top)
+    # Two-mode state machine: "main" shows top-level entries (including
+    # the synthetic Utilities row); "utilities" shows the submenu.
+    mode = "main"
+    main_cursor = 0
+    main_scroll = 0
+    util_cursor = 0
+    util_scroll = 0
+
+    active_apps = top_apps
+    _draw_chrome(active_apps, main_cursor, main_scroll, show_back=False)
 
     # Drain keypresses that accumulated while the WiFi splash was showing.
     for _ in range(15):
@@ -602,62 +480,78 @@ def main():
         kb.get_key()
         time.sleep_ms(20)
 
-    # Burst animation state. We tick one frame per FRAME_MS on top of
-    # the 40 ms keyboard poll — so ~every other iteration advances a
-    # frame. The burst region is disjoint from the menu/chrome, so we
-    # never need to repaint the menu just because the animation
-    # advanced; we only repaint the burst's own bounding box.
-    frame = 0
-    frame_ms = _burst.FRAME_MS if _burst is not None else 80
-    last_frame_ms = time.ticks_ms()
-
     while True:
         kb.tick()
         intent = _intent(kb.get_key())
+
+        # Determine current cursor/scroll for the active mode.
+        if mode == "main":
+            active_apps = top_apps
+            cursor = main_cursor
+            scroll_top = main_scroll
+        else:
+            active_apps = util_apps
+            cursor = util_cursor
+            scroll_top = util_scroll
+
+        repaint = False
+
         if intent == "up":
-            cursor = (cursor - 1) % len(apps)
+            cursor = (cursor - 1) % len(active_apps)
             if cursor < scroll_top:
                 scroll_top = cursor
             elif cursor >= scroll_top + _MAX_VISIBLE:
                 # Wrapped from first item to last — show the tail end.
-                scroll_top = max(0, len(apps) - _MAX_VISIBLE)
-            _draw_chrome(apps, cursor, scroll_top)
+                scroll_top = max(0, len(active_apps) - _MAX_VISIBLE)
+            repaint = True
+
         elif intent == "down":
-            cursor = (cursor + 1) % len(apps)
+            cursor = (cursor + 1) % len(active_apps)
             if cursor >= scroll_top + _MAX_VISIBLE:
                 scroll_top = cursor - _MAX_VISIBLE + 1
             elif cursor < scroll_top:
                 # Wrapped from last item to first — show the top.
                 scroll_top = 0
-            _draw_chrome(apps, cursor, scroll_top)
-        elif intent == "launch":
-            _, mod_name = apps[cursor]
-            _launch(mod_name)
-            # If _launch returns (error path), redraw menu. Reset the
-            # burst phase so the animation restarts from frame 0 for
-            # visual consistency with a fresh launcher entry.
-            _draw_chrome(apps, cursor, scroll_top)
-            frame = 0
-            last_frame_ms = time.ticks_ms()
-            # Debounce so the user's release of Enter doesn't re-fire.
-            time.sleep_ms(300)
+            repaint = True
 
-        # Advance the burst animation if it's time. time.ticks_diff
-        # handles wrap-around safely (ticks_ms rolls over every ~9
-        # hours on MicroPython; not a real concern on a launcher but
-        # cheap insurance).
-        now = time.ticks_ms()
-        if time.ticks_diff(now, last_frame_ms) >= frame_ms:
-            frame += 1
-            _draw_burst_frame(frame)
-            last_frame_ms = now
+        elif intent == "launch":
+            _, mod_name = active_apps[cursor]
+            if mod_name == "__utilities__":
+                if util_apps:  # defensive: guard against empty utilities list
+                    mode = "utilities"
+                    util_cursor = 0
+                    util_scroll = 0
+                    repaint = True
+            else:
+                _launch(mod_name)
+                # If _launch returns (error path), redraw menu.
+                repaint = True
+                # Debounce so the user's release of Enter doesn't re-fire.
+                time.sleep_ms(300)
+
+        elif intent == "back":
+            if mode == "utilities":
+                mode = "main"
+                repaint = True
+            # "back" in main mode is a no-op.
+
+        # Write updated cursor/scroll back to the correct mode slot.
+        if mode == "main":
+            main_cursor = cursor
+            main_scroll = scroll_top
+        else:
+            util_cursor = cursor
+            util_scroll = scroll_top
+
+        if repaint:
+            if mode == "main":
+                _draw_chrome(top_apps, main_cursor, main_scroll, show_back=False)
+            else:
+                _draw_chrome(util_apps, util_cursor, util_scroll, show_back=True)
 
         time.sleep_ms(40)
 
 
 # UIFlow's boot.py invokes us by running this file rather than
-# calling a function. The previous if/else with both arms calling
-# main() was self-cancelling — the comment claimed the guard
-# protected against import-time auto-run, but the else branch
-# defeated that. Run bare; that's what we actually want.
+# calling a function. Run bare — that's what we actually want.
 main()

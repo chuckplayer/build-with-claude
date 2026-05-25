@@ -1,6 +1,6 @@
 # m5stack
 
-Flash a Cardputer-Adv and install the Claude Buddy apps in one command.
+Flash a Cardputer-Adv and install the app bundle in one command.
 
 ## Quick start
 
@@ -39,22 +39,51 @@ Done. Power the device on/off with the side switch.
 
 ## Launcher apps
 
-After boot the launcher shows every `.py` in `/flash/apps/` as a menu entry. The current bundle ships five:
+After boot the launcher shows a menu with pinned apps at the top and a **Utilities** submenu for tools.
+
+### Pinned apps
 
 | App | What it does |
 |-----|-------------|
-| **Claude Buddy** | BLE peripheral that pairs with Claude Desktop's Hardware Buddy feature |
+| **Workout Tracker** | Log sets by split (Push/Pull/Legs/Full Body); live accelerometer rep counting; PR tracking with Epley e1RM; 90 s rest timer with beep; unilateral (alternating-arm) mode for cable exercises |
+
+### Utilities submenu
+
+| App | What it does |
+|-----|-------------|
 | **File Browser** | Navigate `/flash/`, view text files, delete files |
 | **System Info** | One-screen snapshot of firmware, memory, storage, network, and battery state (R to refresh) |
-| **Timer** | Countdown timer and stopwatch; T toggles mode, Enter starts/pauses/resumes, R resets |
 | **WiFi Browser** | Scan networks, type a password, connect, and save the credential for future boots |
 
-## Using Claude Buddy (BLE)
+### Other apps
 
-1. Power on the Cardputer
-2. Pick **Claude Buddy** from the launcher menu
-3. In Claude Desktop: **Help → Troubleshooting → Enable Developer Tools** (one-time, persists)
-4. Then **Developer menu → Hardware Buddy → Connect**
+| App | What it does |
+|-----|-------------|
+| **Timer** | Countdown timer and stopwatch; T toggles mode, Enter starts/pauses/resumes, R resets |
+
+### Workout Tracker keys
+
+| Screen | Key | Action |
+|--------|-----|--------|
+| Home | Enter | Start new workout |
+| Home | D | Delete selected history entry |
+| Split | Enter | Select split (Push / Pull / Legs / Full Body) |
+| Picker | Space | Toggle exercise selection |
+| Picker | Enter | Begin workout with selected exercises |
+| Active | j / k | Weight −5 / +5 lbs |
+| Active | u / d | Reps up / down |
+| Active | Enter | Log the set, start rest timer |
+| Active | P / N | Previous / next exercise |
+| Active | A | Add an exercise from the split list |
+| Active | R | Remove current exercise from queue |
+| Active | L | Toggle unilateral (alternating-arm) mode |
+| Active | F | Finish and save workout |
+| Rest | any key | Skip rest, return to set screen |
+| Rest | F | Finish workout |
+
+The accelerometer rep counter activates automatically during a set — place the device flat on the weight stack. One "out and back" movement = 1 rep. Manual u/d keys override the count at any time.
+
+**Unilateral mode (L key):** for cable exercises done one arm at a time. Press **L** on any exercise to toggle it on — the badge changes from `S1` to `S1 R` and a teal **R** box appears. After the right arm set, Enter immediately shows the **L** screen (orange box, same weight). Second Enter logs both arms and starts the rest timer. PRs are tracked per arm (`"Cable Curl R"` / `"Cable Curl L"`). Press L again to return to normal bilateral logging.
 
 ## WiFi
 
@@ -78,7 +107,7 @@ The header strip shows signal bars + SSID on a successful connect, or `offline` 
    ```
 3. The launcher auto-discovers the new app on next boot
 
-Use `buddy/device/apps/timer.py` or `buddy/device/apps/system_info.py` as starting templates — both show the standard conventions (keyboard polling, font, exit via `machine.reset()`).
+Use `buddy/device/apps/timer.py` or `buddy/device/apps/system_info.py` as starting templates — both show the standard conventions (keyboard polling, font, exit via `machine.reset()`). For a more complete state-machine example see `buddy/device/apps/workout_tracker.py`.
 
 ## Getting back to stock UIFlow
 
