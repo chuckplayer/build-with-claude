@@ -148,6 +148,9 @@ _APPS_DIR = "/flash/apps"
 # Modules that belong in the Utilities submenu rather than the top level.
 _UTILITIES_MODULES = ("system_info", "file_browser", "wifi_browser")
 
+# Modules that should appear first (pinned to top) in the top-level menu.
+_PINNED_MODULES = ("workout_tracker",)
+
 # Make peer modules at /flash/ importable so the launched apps can
 # import them without each one repeating the sys.path dance.
 for _p in ("/flash", "/flash/apps"):
@@ -276,6 +279,9 @@ def _discover_apps():
             top_level.append(entry)
     if utilities:
         top_level.append(("Utilities", "__utilities__"))
+    pinned = [e for e in top_level if e[1] in _PINNED_MODULES]
+    rest   = [e for e in top_level if e[1] not in _PINNED_MODULES]
+    top_level = pinned + rest
     return top_level, utilities
 
 
